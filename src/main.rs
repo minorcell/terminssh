@@ -32,6 +32,7 @@ fn main() {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+        crate::terminal::view::init(cx);
         // Use dark theme to match terminal application aesthetic.
         Theme::change(ThemeMode::Dark, None, cx);
 

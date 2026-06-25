@@ -1,9 +1,9 @@
 //! Terminal view: renders the terminal grid in gpui and handles keyboard input.
 
 use gpui::{
-    div, px, rgb, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement, Render, Styled, Task,
-    Window,
+    actions, div, px, rgb, App, Context, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
+    ParentElement, Render, Styled, Task, Window,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::ActiveTheme as _;
@@ -13,10 +13,21 @@ use crate::ssh::session::{SessionStatus, SshSession};
 use crate::terminal::ansi::TerminalBackend;
 use crate::terminal::grid::{Cell, Color, DEFAULT_BG, DEFAULT_FG};
 
+const TERMINAL_KEY_CONTEXT: &str = "Terminal";
+
+actions!(terminal, [SendTab, SendBackTab]);
+
 enum TerminalEvent {
     Output(Vec<u8>),
     Status(SessionStatus),
     Closed,
+}
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
+        KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
+    ]);
 }
 
 /// The terminal view: a gpui view that displays terminal output and captures keyboard input.
@@ -136,6 +147,31 @@ impl TerminalView {
         }
     }
 
+    fn send_input_bytes(&self, bytes: &[u8], cx: &mut Context<Self>) {
+        if let Some(session) = &self.session {
+            session.send_input(bytes.to_vec());
+        }
+        cx.stop_propagation();
+    }
+
+    fn on_action_send_tab(
+        &mut self,
+        _: &SendTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_input_bytes(b"\t", cx);
+    }
+
+    fn on_action_send_back_tab(
+        &mut self,
+        _: &SendBackTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_input_bytes(b"\x1b[Z", cx);
+    }
+
     /// Handle a key down event: convert to terminal escape sequence and send to SSH.
     pub fn handle_key_down(
         &mut self,
@@ -251,6 +287,9 @@ impl Render for TerminalView {
             .text_size(mono_size)
             .line_height(px(20.0))
             .track_focus(&self.focus_handle)
+            .key_context(TERMINAL_KEY_CONTEXT)
+            .on_action(cx.listener(Self::on_action_send_tab))
+            .on_action(cx.listener(Self::on_action_send_back_tab))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

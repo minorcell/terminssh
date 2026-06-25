@@ -272,6 +272,10 @@ fn render_connection_item(
             h_flex()
                 .flex_shrink_0()
                 .gap(px(2.0))
+                .id(format!("conn-actions-{}", conn.id))
+                .on_click(|_, _, cx| {
+                    cx.stop_propagation();
+                })
                 .child(
                     Button::new(format!("edit-{}", conn.id))
                         .ghost()
@@ -279,6 +283,7 @@ fn render_connection_item(
                         .icon(IconName::Settings2)
                         .tooltip("Edit connection")
                         .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
                             this.show_edit_dialog(&conn_for_edit, window, cx);
                         })),
                 )
@@ -289,6 +294,7 @@ fn render_connection_item(
                         .icon(IconName::Delete)
                         .tooltip("Delete connection")
                         .on_click(cx.listener(move |_, _, window, cx| {
+                            cx.stop_propagation();
                             let conn_id = conn_id_for_delete.clone();
                             let conn_name = conn_name_for_delete.clone();
                             let app = cx.entity();
