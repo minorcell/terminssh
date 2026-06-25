@@ -1,64 +1,9 @@
-# SSH Manager
+# terminssh
 
-SSH Manager is a desktop SSH connection manager built with Rust, GPUI, and
-gpui-component. It stores connection profiles locally and opens SSH sessions in
-tabbed terminal panes.
+terminssh 是一款桌面端 SSH 连接管理工具，面向需要频繁进入多台服务器的开发者与运维用户。
 
-## Features
+它把常用主机、端口、用户名和认证方式保存为连接档案，并通过侧边栏提供快速搜索与分组管理。用户可以一键打开远程终端，在标签页之间切换不同会话，减少反复输入 SSH 命令和查找连接信息的时间。
 
-- Save SSH profiles with password or private-key authentication.
-- Search saved connections from the sidebar.
-- Open multiple SSH sessions as tabs.
-- Basic terminal interaction, including Tab completion and visible-grid text
-  selection/copy.
-- Delete saved profiles with confirmation.
+terminssh 的终端体验围绕日常操作设计：支持命令输入、Tab 补全、文本选择复制、多会话并行，以及连接档案的新增、编辑和删除确认。整体界面保持克制清晰，让用户把注意力放在远程机器和正在执行的任务上。
 
-## Requirements
-
-- Rust toolchain
-- macOS or Linux desktop environment supported by GPUI
-
-## Run
-
-```bash
-cargo run
-```
-
-For a quick compile check:
-
-```bash
-cargo check
-```
-
-## Configuration
-
-Saved profiles are written to:
-
-```text
-<system config dir>/ssh-mamaged/config.json
-```
-
-The exact base directory comes from the Rust `dirs::config_dir()` API. On macOS
-this is typically under `~/Library/Application Support`; on Linux it is usually
-under `~/.config`.
-
-## Local Patches
-
-The `patches/gpui_util` directory is intentional. `Cargo.toml` uses it through:
-
-```toml
-[patch."https://github.com/zed-industries/zed"]
-gpui_util = { path = "patches/gpui_util" }
-```
-
-It replaces the upstream `gpui_util` crate from the pinned Zed/GPUI revision so
-this project can build without the unstable `slice_as_array` feature. Do not
-delete this directory unless the GPUI revision is upgraded or changed and
-`cargo check` passes without the patch.
-
-## Development Notes
-
-- UI code lives mainly in `src/app.rs`, `src/ui`, and `src/terminal/view.rs`.
-- SSH connection/session code lives in `src/ssh`.
-- Terminal parsing and grid state live in `src/terminal`.
-- The project currently has no unit tests; `cargo test` should still pass.
+项目目标是做一个轻量、直接、可持续打磨的 SSH 工作台：保存连接、快速进入、稳定交互。

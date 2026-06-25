@@ -163,7 +163,7 @@ pub fn render_sidebar(
                                 .text_color(title_color)
                                 .text_size(px(15.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("SSH Manager"),
+                                .child("terminssh"),
                         ),
                 )
                 .child(

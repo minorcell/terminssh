@@ -42,7 +42,7 @@ fn main() {
                 cx,
             )),
             titlebar: Some(gpui::TitlebarOptions {
-                title: Some("SSH Manager".into()),
+                title: Some("terminssh".into()),
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
