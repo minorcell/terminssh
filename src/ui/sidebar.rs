@@ -1,0 +1,261 @@
+//! Sidebar component: connection list with add/edit/delete.
+//!
+//! This module provides helper functions for rendering the sidebar.
+//! The sidebar is rendered inline by `AppView` to avoid cross-entity complexity.
+
+use gpui::{
+    div, px, Context, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window,
+};
+use gpui::prelude::FluentBuilder;
+use gpui_component::{
+    h_flex, v_flex,
+    button::{Button, ButtonVariants as _},
+    input::Input,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
+};
+
+use crate::app::AppView;
+use crate::config::SshConnection;
+
+/// Render the sidebar: header + search + connection list.
+/// Called from `AppView::render()`.
+pub fn render_sidebar(
+    app: &mut AppView,
+    _window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let config = app.config.lock().clone();
+
+    // Read search query and filter connections.
+    let search_query = app.search_input.read(cx).value().to_lowercase();
+    let filtered: Vec<SshConnection> = config
+        .connections
+        .iter()
+        .filter(|c| {
+            if search_query.is_empty() {
+                return true;
+            }
+            c.name.to_lowercase().contains(&search_query)
+                || c.host.to_lowercase().contains(&search_query)
+                || c.username.to_lowercase().contains(&search_query)
+        })
+        .cloned()
+        .collect();
+
+    // Pre-compute which connections have open terminals.
+    let active_ids: std::collections::HashSet<String> = app
+        .terminals
+        .iter()
+        .filter_map(|t| {
+            let terminal = t.read(cx);
+            Some(terminal.connection.id.clone())
+        })
+        .collect();
+
+    // Extract theme colors before building UI with closures.
+    let theme = cx.theme();
+    let sidebar_bg = theme.sidebar;
+    let border_color = theme.sidebar_border;
+    let title_color = theme.sidebar_foreground;
+    let muted_color = theme.muted_foreground;
+    let group_color = theme.muted_foreground;
+
+    // Build grouped connection list.
+    let mut grouped: std::collections::BTreeMap<String, Vec<SshConnection>> =
+        std::collections::BTreeMap::new();
+    for conn in &filtered {
+        let group = conn.group.clone().unwrap_or_else(|| "Default".to_string());
+        grouped.entry(group).or_default().push(conn.clone());
+    }
+
+    let mut list = v_flex().flex_1().id("connection-list").overflow_y_scroll();
+    for (group, conns) in &grouped {
+        list = list.child(
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(11.0))
+                .text_color(group_color)
+                .child(group.clone()),
+        );
+        for conn in conns {
+            let is_active = active_ids.contains(&conn.id);
+            list = list.child(render_connection_item(conn.clone(), is_active, cx));
+        }
+    }
+
+    // Determine empty state: no connections at all, or no search results.
+    let list_area = if config.connections.is_empty() {
+        v_flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(
+                Icon::new(IconName::Network)
+                    .size(px(40.0))
+                    .text_color(muted_color),
+            )
+            .child(
+                div()
+                    .text_color(muted_color)
+                    .text_size(px(13.0))
+                    .child("No connections yet"),
+            )
+            .into_any_element()
+    } else if filtered.is_empty() {
+        v_flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(
+                Icon::new(IconName::Search)
+                    .size(px(32.0))
+                    .text_color(muted_color),
+            )
+            .child(
+                div()
+                    .text_color(muted_color)
+                    .text_size(px(13.0))
+                    .child("No matching connections"),
+            )
+            .into_any_element()
+    } else {
+        list.into_any_element()
+    };
+
+    // Clone search_input entity for the Input widget.
+    let search_input = app.search_input.clone();
+
+    v_flex()
+        .w(px(248.0))
+        .h_full()
+        .bg(sidebar_bg)
+        .border_r_1()
+        .border_color(border_color)
+        // Header
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .px(px(12.0))
+                .py(px(10.0))
+                .child(
+                    div()
+                        .text_color(title_color)
+                        .text_size(px(15.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("SSH Manager"),
+                )
+                .child(
+                    Button::new("add-connection")
+                        .primary()
+                        .small()
+                        .icon(IconName::Plus)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_add_dialog(window, cx);
+                        })),
+                ),
+        )
+        // Search bar
+        .child(
+            div().px(px(12.0)).pb(px(8.0)).child(Input::new(&search_input)),
+        )
+        // Connection list
+        .child(list_area)
+        // Status bar at bottom
+        .child(
+            div()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(11.0))
+                .text_color(muted_color)
+                .child(format!("{} connections", config.connections.len())),
+        )
+}
+
+/// Render a single connection item in the sidebar.
+fn render_connection_item(
+    conn: SshConnection,
+    is_active: bool,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let conn_for_click = conn.clone();
+    let conn_for_edit = conn.clone();
+    let conn_id_for_delete = conn.id.clone();
+    let theme = cx.theme();
+    let fg_color = theme.foreground;
+    let muted_color = theme.muted_foreground;
+    let hover_bg = theme.list_hover;
+    let active_bg = theme.list_active;
+    let active_border = theme.primary;
+    let success_color = theme.success;
+    let muted_dot = theme.muted;
+
+    h_flex()
+        .w_full()
+        .px(px(12.0))
+        .py(px(6.0))
+        .items_center()
+        .gap(px(8.0))
+        .when(is_active, |s| {
+            s.bg(active_bg)
+                .border_l_2()
+                .border_color(active_border)
+        })
+        .when(!is_active, |s| s.hover(move |s| s.bg(hover_bg)))
+        .cursor_pointer()
+        .id(format!("conn-{}", conn.id))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_terminal(conn_for_click.clone(), window, cx);
+        }))
+        // Status dot: green when active, muted when inactive
+        .child(
+            div()
+                .w(px(8.0))
+                .h(px(8.0))
+                .rounded_full()
+                .when(is_active, |s| s.bg(success_color))
+                .when(!is_active, |s| s.bg(muted_dot)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .child(
+                    div()
+                        .text_color(fg_color)
+                        .text_size(px(13.0))
+                        .child(conn.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_color(muted_color)
+                        .text_size(px(11.0))
+                        .child(conn.descriptor()),
+                ),
+        )
+        .child(
+            h_flex()
+                .gap(px(2.0))
+                .child(
+                    Button::new(format!("edit-{}", conn.id))
+                        .ghost()
+                        .small()
+                        .icon(IconName::Settings2)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show_edit_dialog(&conn_for_edit, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(format!("del-{}", conn_id_for_delete))
+                        .ghost()
+                        .small()
+                        .icon(IconName::Delete)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.delete_connection(&conn_id_for_delete, cx);
+                        })),
+                ),
+        )
+}

@@ -1,0 +1,40 @@
+[package]
+name = "ssh-mamaged"
+version = "0.1.0"
+edition = "2021"
+description = "An SSH management tool built with gpui and gpui-component"
+
+[dependencies]
+# GPUI framework and platform layer (must match gpui-component's rev)
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+
+# UI component library
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+
+# SSH protocol
+russh = "0.61"
+
+# Async runtime (russh requires tokio)
+tokio = { version = "1", features = ["full"] }
+
+# ANSI escape sequence parser
+vte = "0.13"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+anyhow = "1"
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
+
+# Patch gpui_util to fix unstable slice_as_array feature (uses .try_into() instead of .as_array())
+[patch."https://github.com/zed-industries/zed"]
+gpui_util = { path = "patches/gpui_util" }
