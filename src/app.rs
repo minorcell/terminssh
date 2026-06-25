@@ -20,6 +20,11 @@ use crate::config::{AppConfig, AuthMethod, SshConnection};
 use crate::terminal::view::TerminalView;
 use crate::ui;
 
+#[cfg(target_os = "macos")]
+const TITLEBAR_SAFE_TOP: f32 = 30.0;
+#[cfg(not(target_os = "macos"))]
+const TITLEBAR_SAFE_TOP: f32 = 0.0;
+
 /// The main application view, integrating sidebar, terminal tabs, and dialog.
 pub struct AppView {
     /// Application configuration (shared, persisted to JSON).
@@ -63,8 +68,11 @@ impl AppView {
         let port_input = cx.new(|cx| InputState::new(window, cx).placeholder("22"));
         let username_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("root"));
-        let password_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Password"));
+        let password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Password")
+                .masked(true)
+        });
         let key_path_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_rsa"));
         let group_input =
@@ -249,6 +257,7 @@ impl AppView {
         let runtime = self.runtime_handle.clone();
         let terminal =
             cx.new(|cx| TerminalView::new(&runtime, conn, window, cx));
+        cx.focus_view(&terminal, window);
         self.terminals.push(terminal);
         self.active_terminal = self.terminals.len() - 1;
         cx.notify();
@@ -279,7 +288,7 @@ impl AppView {
 
         let mut tabs = h_flex()
             .w_full()
-            .h(px(36.0))
+            .h(px(40.0))
             .bg(tab_bar_bg)
             .border_b_1()
             .border_color(border_color);
@@ -290,7 +299,7 @@ impl AppView {
 
             tabs = tabs.child(
                 h_flex()
-                    .px(px(12.0))
+                    .px(px(14.0))
                     .h_full()
                     .items_center()
                     .gap(px(8.0))
@@ -334,27 +343,32 @@ impl AppView {
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .gap(px(12.0))
+                .gap(px(10.0))
                 .bg(cx.theme().background)
                 .child(
                     Icon::new(IconName::SquareTerminal)
-                        .size(px(48.0))
+                        .size(px(42.0))
                         .text_color(muted),
                 )
                 .child(
                     div()
                         .text_color(muted)
-                        .text_size(px(15.0))
-                        .child("Select a connection from the sidebar to start"),
+                        .text_size(px(14.0))
+                        .child("Select a connection to start"),
                 )
                 .into_any_element()
         } else {
             v_flex()
                 .flex_1()
+                .h_full()
+                .min_h_0()
                 .child(self.render_tab_bar(cx))
                 .child(
                     div()
                         .flex_1()
+                        .h_full()
+                        .min_h_0()
+                        .overflow_hidden()
                         .child(self.terminals[self.active_terminal].clone()),
                 )
                 .into_any_element()
@@ -373,6 +387,9 @@ impl Render for AppView {
         // Assemble root layout.
         let mut root = h_flex()
             .size_full()
+            .min_h_0()
+            .overflow_hidden()
+            .pt(px(TITLEBAR_SAFE_TOP))
             .bg(cx.theme().background)
             .child(sidebar)
             .child(terminal_area);

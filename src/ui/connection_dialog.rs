@@ -5,11 +5,11 @@
 
 use gpui::{div, px, IntoElement, ParentElement, Styled, Window};
 use gpui_component::{
-    h_flex, v_flex,
     button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputState},
     label::Label,
-    ActiveTheme as _, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 
 use crate::app::AppView;
@@ -42,20 +42,34 @@ pub fn render_connection_dialog(
         .justify_center()
         .child(
             v_flex()
-                .w(px(480.0))
+                .w(px(540.0))
                 .bg(dialog_bg)
                 .border_1()
                 .border_color(border_color)
                 .rounded(radius)
-                .p(px(20.0))
-                .gap(px(12.0))
+                .p(px(22.0))
+                .gap(px(14.0))
                 // Stop propagation so clicking inside doesn't close
                 .child(
-                    div()
-                        .text_color(title_color)
-                        .text_size(px(16.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(if is_edit { "Edit Connection" } else { "Add Connection" }),
+                    h_flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            Icon::new(IconName::Network)
+                                .size(px(18.0))
+                                .text_color(title_color),
+                        )
+                        .child(
+                            div()
+                                .text_color(title_color)
+                                .text_size(px(17.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(if is_edit {
+                                    "Edit Connection"
+                                } else {
+                                    "Add Connection"
+                                }),
+                        ),
                 )
                 // Name field
                 .child(render_field("Name", &app.name_input, label_color))
@@ -100,58 +114,66 @@ pub fn render_connection_dialog(
                         .child(
                             h_flex()
                                 .gap(px(8.0))
-                                .child(
-                                    if app.auth_method_is_password() {
-                                        Button::new("auth-password")
-                                            .primary()
-                                            .small()
-                                            .label("Password")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.set_auth_method_password(cx);
-                                            }))
-                                            .into_any_element()
-                                    } else {
-                                        Button::new("auth-password")
-                                            .ghost()
-                                            .small()
-                                            .label("Password")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.set_auth_method_password(cx);
-                                            }))
-                                            .into_any_element()
-                                    },
-                                )
-                                .child(
-                                    if app.auth_method_is_key() {
-                                        Button::new("auth-key")
-                                            .primary()
-                                            .small()
-                                            .label("Private Key")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.set_auth_method_key(cx);
-                                            }))
-                                            .into_any_element()
-                                    } else {
-                                        Button::new("auth-key")
-                                            .ghost()
-                                            .small()
-                                            .label("Private Key")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.set_auth_method_key(cx);
-                                            }))
-                                            .into_any_element()
-                                    },
-                                ),
+                                .child(if app.auth_method_is_password() {
+                                    Button::new("auth-password")
+                                        .primary()
+                                        .small()
+                                        .label("Password")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_auth_method_password(cx);
+                                        }))
+                                        .into_any_element()
+                                } else {
+                                    Button::new("auth-password")
+                                        .ghost()
+                                        .small()
+                                        .label("Password")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_auth_method_password(cx);
+                                        }))
+                                        .into_any_element()
+                                })
+                                .child(if app.auth_method_is_key() {
+                                    Button::new("auth-key")
+                                        .primary()
+                                        .small()
+                                        .label("Private Key")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_auth_method_key(cx);
+                                        }))
+                                        .into_any_element()
+                                } else {
+                                    Button::new("auth-key")
+                                        .ghost()
+                                        .small()
+                                        .label("Private Key")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_auth_method_key(cx);
+                                        }))
+                                        .into_any_element()
+                                }),
                         ),
                 )
                 // Auth-specific fields
                 .child(if app.auth_method_is_password() {
-                    render_field("Password", &app.password_input, label_color).into_any_element()
+                    v_flex()
+                        .gap(px(4.0))
+                        .child(
+                            Label::new("Password")
+                                .text_size(px(12.0))
+                                .text_color(label_color),
+                        )
+                        .child(Input::new(&app.password_input).mask_toggle())
+                        .into_any_element()
                 } else {
                     render_field("Key Path", &app.key_path_input, label_color).into_any_element()
                 })
                 // Group field
-                .child(render_field("Group (optional)", &app.group_input, label_color))
+                .child(render_field(
+                    "Group (optional)",
+                    &app.group_input,
+                    label_color,
+                ))
                 // Buttons
                 .child(
                     h_flex()

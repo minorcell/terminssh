@@ -3,16 +3,17 @@
 //! This module provides helper functions for rendering the sidebar.
 //! The sidebar is rendered inline by `AppView` to avoid cross-entity complexity.
 
-use gpui::{
-    div, px, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window,
-};
 use gpui::prelude::FluentBuilder;
+use gpui::{
+    div, px, Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, Window,
+};
 use gpui_component::{
-    h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonVariant, ButtonVariants as _},
+    dialog::DialogButtonProps,
+    h_flex,
     input::Input,
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
 };
 
 use crate::app::AppView;
@@ -52,6 +53,7 @@ pub fn render_sidebar(
             Some(terminal.connection.id.clone())
         })
         .collect();
+    let active_count = active_ids.len();
 
     // Extract theme colors before building UI with closures.
     let theme = cx.theme();
@@ -69,15 +71,21 @@ pub fn render_sidebar(
         grouped.entry(group).or_default().push(conn.clone());
     }
 
-    let mut list = v_flex().flex_1().id("connection-list").overflow_y_scroll();
+    let mut list = v_flex()
+        .flex_1()
+        .id("connection-list")
+        .overflow_y_scroll()
+        .pt(px(4.0));
     for (group, conns) in &grouped {
+        let group_label = group.to_uppercase();
         list = list.child(
             div()
-                .px(px(12.0))
-                .py(px(6.0))
+                .px(px(14.0))
+                .pt(px(10.0))
+                .pb(px(5.0))
                 .text_size(px(11.0))
                 .text_color(group_color)
-                .child(group.clone()),
+                .child(group_label),
         );
         for conn in conns {
             let is_active = active_ids.contains(&conn.id);
@@ -130,7 +138,7 @@ pub fn render_sidebar(
     let search_input = app.search_input.clone();
 
     v_flex()
-        .w(px(248.0))
+        .w(px(288.0))
         .h_full()
         .bg(sidebar_bg)
         .border_r_1()
@@ -140,20 +148,31 @@ pub fn render_sidebar(
             h_flex()
                 .justify_between()
                 .items_center()
-                .px(px(12.0))
-                .py(px(10.0))
+                .px(px(14.0))
+                .py(px(12.0))
                 .child(
-                    div()
-                        .text_color(title_color)
-                        .text_size(px(15.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("SSH Manager"),
+                    h_flex()
+                        .gap(px(8.0))
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::SquareTerminal)
+                                .size(px(18.0))
+                                .text_color(title_color),
+                        )
+                        .child(
+                            div()
+                                .text_color(title_color)
+                                .text_size(px(15.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("SSH Manager"),
+                        ),
                 )
                 .child(
                     Button::new("add-connection")
                         .primary()
                         .small()
                         .icon(IconName::Plus)
+                        .tooltip("Add connection")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.show_add_dialog(window, cx);
                         })),
@@ -161,18 +180,28 @@ pub fn render_sidebar(
         )
         // Search bar
         .child(
-            div().px(px(12.0)).pb(px(8.0)).child(Input::new(&search_input)),
+            div().px(px(14.0)).pb(px(10.0)).child(
+                Input::new(&search_input)
+                    .prefix(Icon::new(IconName::Search).xsmall().text_color(muted_color))
+                    .cleanable(true),
+            ),
         )
         // Connection list
         .child(list_area)
         // Status bar at bottom
         .child(
             div()
-                .px(px(12.0))
-                .py(px(6.0))
+                .px(px(14.0))
+                .py(px(9.0))
+                .border_t_1()
+                .border_color(border_color)
                 .text_size(px(11.0))
                 .text_color(muted_color)
-                .child(format!("{} connections", config.connections.len())),
+                .child(format!(
+                    "{} saved / {} active",
+                    config.connections.len(),
+                    active_count
+                )),
         )
 }
 
@@ -185,6 +214,7 @@ fn render_connection_item(
     let conn_for_click = conn.clone();
     let conn_for_edit = conn.clone();
     let conn_id_for_delete = conn.id.clone();
+    let conn_name_for_delete = conn.name.clone();
     let theme = cx.theme();
     let fg_color = theme.foreground;
     let muted_color = theme.muted_foreground;
@@ -196,14 +226,14 @@ fn render_connection_item(
 
     h_flex()
         .w_full()
-        .px(px(12.0))
-        .py(px(6.0))
+        .mx(px(8.0))
+        .px(px(10.0))
+        .py(px(8.0))
         .items_center()
-        .gap(px(8.0))
+        .gap(px(10.0))
+        .rounded(px(6.0))
         .when(is_active, |s| {
-            s.bg(active_bg)
-                .border_l_2()
-                .border_color(active_border)
+            s.bg(active_bg).border_l_2().border_color(active_border)
         })
         .when(!is_active, |s| s.hover(move |s| s.bg(hover_bg)))
         .cursor_pointer()
@@ -223,10 +253,12 @@ fn render_connection_item(
         .child(
             v_flex()
                 .flex_1()
+                .gap(px(2.0))
                 .child(
                     div()
                         .text_color(fg_color)
                         .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
                         .child(conn.name.clone()),
                 )
                 .child(
@@ -238,12 +270,14 @@ fn render_connection_item(
         )
         .child(
             h_flex()
+                .flex_shrink_0()
                 .gap(px(2.0))
                 .child(
                     Button::new(format!("edit-{}", conn.id))
                         .ghost()
                         .small()
                         .icon(IconName::Settings2)
+                        .tooltip("Edit connection")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.show_edit_dialog(&conn_for_edit, window, cx);
                         })),
@@ -253,8 +287,40 @@ fn render_connection_item(
                         .ghost()
                         .small()
                         .icon(IconName::Delete)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.delete_connection(&conn_id_for_delete, cx);
+                        .tooltip("Delete connection")
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            let conn_id = conn_id_for_delete.clone();
+                            let conn_name = conn_name_for_delete.clone();
+                            let app = cx.entity();
+
+                            window.open_alert_dialog(cx, move |alert, _, cx| {
+                                let conn_id = conn_id.clone();
+                                let app = app.clone();
+
+                                alert
+                                    .icon(
+                                        Icon::new(IconName::TriangleAlert)
+                                            .text_color(cx.theme().danger),
+                                    )
+                                    .title("Delete connection")
+                                    .description(format!(
+                                        "Delete \"{}\"? This only removes the saved profile.",
+                                        conn_name
+                                    ))
+                                    .button_props(
+                                        DialogButtonProps::default()
+                                            .ok_variant(ButtonVariant::Danger)
+                                            .ok_text("Delete")
+                                            .cancel_text("Cancel")
+                                            .show_cancel(true),
+                                    )
+                                    .on_ok(move |_, _, cx| {
+                                        app.update(cx, |app, cx| {
+                                            app.delete_connection(&conn_id, cx);
+                                        });
+                                        true
+                                    })
+                            });
                         })),
                 ),
         )

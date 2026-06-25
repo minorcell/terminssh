@@ -1,11 +1,9 @@
 //! Terminal view: renders the terminal grid in gpui and handles keyboard input.
 
-use std::time::Duration;
-
 use gpui::{
-    div, px, rgb, App, Context, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, Keystroke, KeyDownEvent, ParentElement, Render,
-    Styled, Task, Window,
+    div, px, rgb, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement, Render, Styled, Task,
+    Window,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::ActiveTheme as _;
@@ -14,6 +12,12 @@ use crate::config::SshConnection;
 use crate::ssh::session::{SessionStatus, SshSession};
 use crate::terminal::ansi::TerminalBackend;
 use crate::terminal::grid::{Cell, Color, DEFAULT_BG, DEFAULT_FG};
+
+enum TerminalEvent {
+    Output(Vec<u8>),
+    Status(SessionStatus),
+    Closed,
+}
 
 /// The terminal view: a gpui view that displays terminal output and captures keyboard input.
 pub struct TerminalView {
@@ -29,8 +33,8 @@ pub struct TerminalView {
     pub connection: SshConnection,
     /// Focus handle for keyboard input.
     focus_handle: FocusHandle,
-    /// The output polling task (kept alive to prevent cancellation).
-    _timer_sub: Option<Task<()>>,
+    /// The output event task (kept alive to prevent cancellation).
+    _event_sub: Option<Task<()>>,
 }
 
 impl TerminalView {
@@ -47,61 +51,70 @@ impl TerminalView {
 
         // Create SSH session.
         let session = SshSession::connect(runtime, &connection);
+        let output_rx = session.output_receiver();
+        let status_rx = session.status_receiver();
 
-        // Start polling for output with adaptive interval.
+        // Wait for SSH events instead of polling while idle.
         let poll = cx.spawn(async move |this, cx| {
-            let fast_interval = Duration::from_millis(16);   // 60fps when data is flowing
-            let idle_interval = Duration::from_millis(200);  // 5fps when idle, low CPU
-            let mut current_interval = idle_interval;
-
             loop {
-                cx.background_executor()
-                    .timer(current_interval)
+                let output_rx = output_rx.clone();
+                let status_rx = status_rx.clone();
+                let event = cx
+                    .background_executor()
+                    .spawn(async move { wait_for_session_event(output_rx, status_rx) })
                     .await;
 
                 let result = this.update(cx, |this, cx| {
-                    // Drain SSH output into the terminal.
-                    if let Some(session) = &this.session {
-                        let mut had_data = false;
-                        loop {
-                            match session.try_recv_output() {
-                                Some(data) => {
-                                    // Feed data through the vte parser into the backend.
-                                    for &byte in &data {
-                                        this.parser.advance(&mut this.backend, byte);
-                                    }
-                                    had_data = true;
-                                }
-                                None => break,
-                            }
-                        }
+                    let mut had_data = false;
+                    let mut had_status = false;
+                    let closed = matches!(event, TerminalEvent::Closed);
 
-                        // Check for status updates.
-                        while let Some(status) = session.try_recv_status() {
+                    match event {
+                        TerminalEvent::Output(data) => {
+                            this.apply_output(&data);
+                            had_data = true;
+                        }
+                        TerminalEvent::Status(status) => {
                             this.status = status;
+                            had_status = true;
                         }
-
-                        if had_data {
-                            cx.notify();
-                        }
-
-                        // Return whether we got data so the interval can adapt.
-                        had_data
-                    } else {
-                        false
+                        TerminalEvent::Closed => {}
                     }
+
+                    // Drain anything that arrived while the UI update was queued.
+                    let mut output_batches = Vec::new();
+                    let mut statuses = Vec::new();
+                    if let Some(session) = &this.session {
+                        while let Some(data) = session.try_recv_output() {
+                            output_batches.push(data);
+                        }
+
+                        while let Some(status) = session.try_recv_status() {
+                            statuses.push(status);
+                        }
+                    }
+                    for data in output_batches {
+                        this.apply_output(&data);
+                        had_data = true;
+                    }
+                    for status in statuses {
+                        this.status = status;
+                        had_status = true;
+                    }
+
+                    if had_data || had_status {
+                        cx.notify();
+                    }
+
+                    closed
                 });
 
-                if result.is_err() {
-                    // The view was dropped, stop polling.
-                    break;
-                }
-
-                // Adaptive interval: fast when data is flowing, slow when idle.
-                if let Ok(true) = result {
-                    current_interval = fast_interval;
-                } else {
-                    current_interval = idle_interval;
+                match result {
+                    Ok(false) => {}
+                    Ok(true) | Err(_) => {
+                        // The session ended or the view was dropped.
+                        break;
+                    }
                 }
             }
         });
@@ -113,7 +126,13 @@ impl TerminalView {
             status: SessionStatus::Connecting,
             connection,
             focus_handle,
-            _timer_sub: Some(poll),
+            _event_sub: Some(poll),
+        }
+    }
+
+    fn apply_output(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.parser.advance(&mut self.backend, byte);
         }
     }
 
@@ -122,7 +141,7 @@ impl TerminalView {
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let Some(session) = &self.session else { return };
 
@@ -131,6 +150,7 @@ impl TerminalView {
 
         if !data.is_empty() {
             session.send_input(data);
+            cx.stop_propagation();
         }
     }
 
@@ -186,6 +206,22 @@ impl TerminalView {
     }
 }
 
+fn wait_for_session_event(
+    output_rx: crossbeam_channel::Receiver<Vec<u8>>,
+    status_rx: crossbeam_channel::Receiver<SessionStatus>,
+) -> TerminalEvent {
+    crossbeam_channel::select! {
+        recv(output_rx) -> msg => match msg {
+            Ok(data) => TerminalEvent::Output(data),
+            Err(_) => TerminalEvent::Closed,
+        },
+        recv(status_rx) -> msg => match msg {
+            Ok(status) => TerminalEvent::Status(status),
+            Err(_) => TerminalEvent::Closed,
+        },
+    }
+}
+
 impl Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -203,7 +239,11 @@ impl Render for TerminalView {
 
         div()
             .size_full()
-            .bg(rgb(((DEFAULT_BG.r as u32) << 16) | ((DEFAULT_BG.g as u32) << 8) | (DEFAULT_BG.b as u32)))
+            .flex_1()
+            .h_full()
+            .bg(rgb(((DEFAULT_BG.r as u32) << 16)
+                | ((DEFAULT_BG.g as u32) << 8)
+                | (DEFAULT_BG.b as u32)))
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -211,6 +251,14 @@ impl Render for TerminalView {
             .text_size(mono_size)
             .line_height(px(20.0))
             .track_focus(&self.focus_handle)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key_down(event, window, cx);
             }))

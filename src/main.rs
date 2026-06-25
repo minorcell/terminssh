@@ -25,7 +25,9 @@ fn main() {
     // Load or create the application configuration.
     let config = Arc::new(Mutex::new(AppConfig::load().unwrap_or_default()));
 
-    let app = gpui_platform::application().with_assets(Assets);
+    let app = gpui_platform::application()
+        .with_assets(Assets)
+        .with_quit_mode(gpui::QuitMode::LastWindowClosed);
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.

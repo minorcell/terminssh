@@ -94,6 +94,16 @@ impl SshSession {
         self.status_rx.try_recv().ok()
     }
 
+    /// Clone the output receiver so the UI can wait for terminal data without polling.
+    pub fn output_receiver(&self) -> Receiver<Vec<u8>> {
+        self.output_rx.clone()
+    }
+
+    /// Clone the status receiver so the UI can wait for status changes without polling.
+    pub fn status_receiver(&self) -> Receiver<SessionStatus> {
+        self.status_rx.clone()
+    }
+
     /// Check if the session is currently connected.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
