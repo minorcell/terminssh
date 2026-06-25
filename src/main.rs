@@ -14,6 +14,18 @@ mod ui;
 use crate::app::AppView;
 use crate::config::AppConfig;
 
+const APP_ICON: &[u8] = include_bytes!("../assets/icon.png");
+
+fn load_app_icon() -> Option<Arc<image::RgbaImage>> {
+    match image::load_from_memory(APP_ICON) {
+        Ok(image) => Some(Arc::new(image.into_rgba8())),
+        Err(error) => {
+            log::warn!("Failed to load app icon: {}", error);
+            None
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -46,6 +58,8 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
+            app_id: Some("terminssh".into()),
+            icon: load_app_icon(),
             ..Default::default()
         };
 
