@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
-use gpui::{
-    div, px, AnyElement, AppContext, Context, Entity, IntoElement, ParentElement, Render,
-    Styled, Window,
-};
 use gpui::prelude::FluentBuilder;
+use gpui::{
+    div, px, AnyElement, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled,
+    Window,
+};
 use gpui_component::{
-    h_flex, v_flex,
     button::{Button, ButtonVariants as _},
+    h_flex,
     input::InputState,
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 use parking_lot::Mutex;
 use uuid::Uuid;
@@ -37,6 +37,8 @@ pub struct AppView {
     pub active_terminal: usize,
     /// Whether the connection dialog is visible.
     pub show_dialog: bool,
+    /// Pending delete confirmation: (connection id, connection name).
+    pub delete_confirm: Option<(String, String)>,
     /// If editing an existing connection, its ID.
     pub editing_id: Option<String>,
     /// Dialog auth method selection: true = password, false = private key.
@@ -61,22 +63,17 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let name_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("My Server"));
-        let host_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("192.168.1.1"));
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("My Server"));
+        let host_input = cx.new(|cx| InputState::new(window, cx).placeholder("192.168.1.1"));
         let port_input = cx.new(|cx| InputState::new(window, cx).placeholder("22"));
-        let username_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("root"));
+        let username_input = cx.new(|cx| InputState::new(window, cx).placeholder("root"));
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Password")
                 .masked(true)
         });
-        let key_path_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_rsa"));
-        let group_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Production"));
+        let key_path_input = cx.new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_rsa"));
+        let group_input = cx.new(|cx| InputState::new(window, cx).placeholder("Production"));
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search connections..."));
 
@@ -92,6 +89,7 @@ impl AppView {
             terminals: Vec::new(),
             active_terminal: 0,
             show_dialog: false,
+            delete_confirm: None,
             editing_id: None,
             auth_is_password: true,
             name_input,
@@ -133,18 +131,43 @@ impl AppView {
         cx.notify();
     }
 
+    pub fn show_delete_confirm(&mut self, id: String, name: String, cx: &mut Context<Self>) {
+        self.delete_confirm = Some((id, name));
+        cx.notify();
+    }
+
+    pub fn close_delete_confirm(&mut self, cx: &mut Context<Self>) {
+        self.delete_confirm = None;
+        cx.notify();
+    }
+
+    pub fn confirm_delete_connection(&mut self, cx: &mut Context<Self>) {
+        if let Some((id, _)) = self.delete_confirm.take() {
+            self.delete_connection(&id, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     pub fn show_add_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_id = None;
         self.show_dialog = true;
         self.auth_is_password = true;
 
-        self.name_input.update(cx, |s, cx| s.set_value("", window, cx));
-        self.host_input.update(cx, |s, cx| s.set_value("", window, cx));
-        self.port_input.update(cx, |s, cx| s.set_value("22", window, cx));
-        self.username_input.update(cx, |s, cx| s.set_value("", window, cx));
-        self.password_input.update(cx, |s, cx| s.set_value("", window, cx));
-        self.key_path_input.update(cx, |s, cx| s.set_value("", window, cx));
-        self.group_input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.name_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.host_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.port_input
+            .update(cx, |s, cx| s.set_value("22", window, cx));
+        self.username_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.password_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.key_path_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.group_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
 
         cx.notify();
     }
@@ -159,8 +182,10 @@ impl AppView {
         self.show_dialog = true;
         self.auth_is_password = matches!(conn.auth_method, AuthMethod::Password { .. });
 
-        self.name_input.update(cx, |s, cx| s.set_value(&conn.name, window, cx));
-        self.host_input.update(cx, |s, cx| s.set_value(&conn.host, window, cx));
+        self.name_input
+            .update(cx, |s, cx| s.set_value(&conn.name, window, cx));
+        self.host_input
+            .update(cx, |s, cx| s.set_value(&conn.host, window, cx));
         self.port_input
             .update(cx, |s, cx| s.set_value(&conn.port.to_string(), window, cx));
         self.username_input
@@ -178,7 +203,8 @@ impl AppView {
         }
 
         let group = conn.group.as_deref().unwrap_or("");
-        self.group_input.update(cx, |s, cx| s.set_value(group, window, cx));
+        self.group_input
+            .update(cx, |s, cx| s.set_value(group, window, cx));
 
         cx.notify();
     }
@@ -186,12 +212,7 @@ impl AppView {
     pub fn save_connection(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name_input.read(cx).value().to_string();
         let host = self.host_input.read(cx).value().to_string();
-        let port: u16 = self
-            .port_input
-            .read(cx)
-            .value()
-            .parse()
-            .unwrap_or(22);
+        let port: u16 = self.port_input.read(cx).value().parse().unwrap_or(22);
         let username = self.username_input.read(cx).value().to_string();
         let group = {
             let g = self.group_input.read(cx).value().to_string();
@@ -255,8 +276,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let runtime = self.runtime_handle.clone();
-        let terminal =
-            cx.new(|cx| TerminalView::new(&runtime, conn, window, cx));
+        let terminal = cx.new(|cx| TerminalView::new(&runtime, conn, window, cx));
         cx.focus_view(&terminal, window);
         self.terminals.push(terminal);
         self.active_terminal = self.terminals.len() - 1;
@@ -332,11 +352,7 @@ impl AppView {
     }
 
     /// Render the terminal area: tab bar + active terminal, or a placeholder.
-    fn render_terminal_area(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_terminal_area(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.terminals.is_empty() {
             let muted = cx.theme().muted_foreground;
             v_flex()
@@ -374,6 +390,89 @@ impl AppView {
                 .into_any_element()
         }
     }
+
+    fn render_delete_confirm_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (_, name) = self.delete_confirm.clone()?;
+        let theme = cx.theme();
+        let overlay_bg = theme.overlay;
+        let dialog_bg = theme.popover;
+        let border_color = theme.border;
+        let title_color = theme.foreground;
+        let muted_color = theme.muted_foreground;
+        let danger_color = theme.danger;
+        let radius = theme.radius;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .bg(overlay_bg)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    v_flex()
+                        .w(px(420.0))
+                        .bg(dialog_bg)
+                        .border_1()
+                        .border_color(border_color)
+                        .rounded(radius)
+                        .p(px(22.0))
+                        .gap(px(14.0))
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .size(px(18.0))
+                                        .text_color(danger_color),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(title_color)
+                                        .text_size(px(17.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("Delete connection"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_color(muted_color)
+                                .text_size(px(13.0))
+                                .child(format!(
+                                    "Delete \"{}\"? This only removes the saved profile.",
+                                    name
+                                )),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .child(
+                                    Button::new("delete-confirm-cancel")
+                                        .ghost()
+                                        .label("Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_delete_confirm(cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("delete-confirm-ok")
+                                        .danger()
+                                        .icon(IconName::Delete)
+                                        .label("Delete")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_delete_connection(cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for AppView {
@@ -397,6 +496,10 @@ impl Render for AppView {
         // Overlay connection dialog if visible.
         if self.show_dialog {
             let dialog = ui::connection_dialog::render_connection_dialog(self, window, cx);
+            root = root.child(dialog);
+        }
+
+        if let Some(dialog) = self.render_delete_confirm_dialog(cx) {
             root = root.child(dialog);
         }
 

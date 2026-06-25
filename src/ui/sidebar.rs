@@ -9,11 +9,10 @@ use gpui::{
     Styled, Window,
 };
 use gpui_component::{
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::DialogButtonProps,
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 
 use crate::app::AppView;
@@ -272,10 +271,6 @@ fn render_connection_item(
             h_flex()
                 .flex_shrink_0()
                 .gap(px(2.0))
-                .id(format!("conn-actions-{}", conn.id))
-                .on_click(|_, _, cx| {
-                    cx.stop_propagation();
-                })
                 .child(
                     Button::new(format!("edit-{}", conn.id))
                         .ghost()
@@ -293,40 +288,13 @@ fn render_connection_item(
                         .small()
                         .icon(IconName::Delete)
                         .tooltip("Delete connection")
-                        .on_click(cx.listener(move |_, _, window, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            let conn_id = conn_id_for_delete.clone();
-                            let conn_name = conn_name_for_delete.clone();
-                            let app = cx.entity();
-
-                            window.open_alert_dialog(cx, move |alert, _, cx| {
-                                let conn_id = conn_id.clone();
-                                let app = app.clone();
-
-                                alert
-                                    .icon(
-                                        Icon::new(IconName::TriangleAlert)
-                                            .text_color(cx.theme().danger),
-                                    )
-                                    .title("Delete connection")
-                                    .description(format!(
-                                        "Delete \"{}\"? This only removes the saved profile.",
-                                        conn_name
-                                    ))
-                                    .button_props(
-                                        DialogButtonProps::default()
-                                            .ok_variant(ButtonVariant::Danger)
-                                            .ok_text("Delete")
-                                            .cancel_text("Cancel")
-                                            .show_cancel(true),
-                                    )
-                                    .on_ok(move |_, _, cx| {
-                                        app.update(cx, |app, cx| {
-                                            app.delete_connection(&conn_id, cx);
-                                        });
-                                        true
-                                    })
-                            });
+                            this.show_delete_confirm(
+                                conn_id_for_delete.clone(),
+                                conn_name_for_delete.clone(),
+                                cx,
+                            );
                         })),
                 ),
         )

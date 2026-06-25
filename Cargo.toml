@@ -3,6 +3,7 @@ name = "ssh-mamaged"
 version = "0.1.0"
 edition = "2021"
 description = "An SSH management tool built with gpui and gpui-component"
+readme = "README.md"
 
 [dependencies]
 # GPUI framework and platform layer (must match gpui-component's rev)

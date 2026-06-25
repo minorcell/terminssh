@@ -1,10 +1,12 @@
 //! Terminal view: renders the terminal grid in gpui and handles keyboard input.
 
 use gpui::{
-    actions, div, px, rgb, App, Context, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
-    ParentElement, Render, Styled, Task, Window,
+    actions, div, px, rgb, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, Styled, Task, Window,
 };
+use std::time::{Duration, Instant};
+
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::ActiveTheme as _;
 
@@ -14,8 +16,10 @@ use crate::terminal::ansi::TerminalBackend;
 use crate::terminal::grid::{Cell, Color, DEFAULT_BG, DEFAULT_FG};
 
 const TERMINAL_KEY_CONTEXT: &str = "Terminal";
+const SELECTION_FG: Color = Color::rgb(0xff, 0xff, 0xff);
+const SELECTION_BG: Color = Color::rgb(0x3d, 0x59, 0x82);
 
-actions!(terminal, [SendTab, SendBackTab]);
+actions!(terminal, [SendTab, SendBackTab, CopySelection]);
 
 enum TerminalEvent {
     Output(Vec<u8>),
@@ -27,6 +31,10 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
         KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-c", CopySelection, Some(TERMINAL_KEY_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-c", CopySelection, Some(TERMINAL_KEY_CONTEXT)),
     ]);
 }
 
@@ -44,6 +52,16 @@ pub struct TerminalView {
     pub connection: SshConnection,
     /// Focus handle for keyboard input.
     focus_handle: FocusHandle,
+    /// Selection anchor/head in visible grid coordinates.
+    selection_anchor: Option<(usize, usize)>,
+    selection_head: Option<(usize, usize)>,
+    selection_dragging: bool,
+    selection_changed: bool,
+    /// Cached row bounds from GPUI prepaint for mouse selection hit testing.
+    row_bounds: Vec<Bounds<Pixels>>,
+    /// Used to dedupe Tab if both a key binding action and key_down are delivered.
+    last_tab_action_at: Option<Instant>,
+    last_back_tab_action_at: Option<Instant>,
     /// The output event task (kept alive to prevent cancellation).
     _event_sub: Option<Task<()>>,
 }
@@ -137,6 +155,13 @@ impl TerminalView {
             status: SessionStatus::Connecting,
             connection,
             focus_handle,
+            selection_anchor: None,
+            selection_head: None,
+            selection_dragging: false,
+            selection_changed: false,
+            row_bounds: Vec::new(),
+            last_tab_action_at: None,
+            last_back_tab_action_at: None,
             _event_sub: Some(poll),
         }
     }
@@ -154,12 +179,8 @@ impl TerminalView {
         cx.stop_propagation();
     }
 
-    fn on_action_send_tab(
-        &mut self,
-        _: &SendTab,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_action_send_tab(&mut self, _: &SendTab, _window: &mut Window, cx: &mut Context<Self>) {
+        self.last_tab_action_at = Some(Instant::now());
         self.send_input_bytes(b"\t", cx);
     }
 
@@ -169,7 +190,21 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.last_back_tab_action_at = Some(Instant::now());
         self.send_input_bytes(b"\x1b[Z", cx);
+    }
+
+    fn on_action_copy_selection(
+        &mut self,
+        _: &CopySelection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+
+        cx.stop_propagation();
     }
 
     /// Handle a key down event: convert to terminal escape sequence and send to SSH.
@@ -182,6 +217,28 @@ impl TerminalView {
         let Some(session) = &self.session else { return };
 
         let ks = &event.keystroke;
+        if ks.key == "tab" {
+            let last_action = if ks.modifiers.shift {
+                &mut self.last_back_tab_action_at
+            } else {
+                &mut self.last_tab_action_at
+            };
+
+            let action_already_sent = last_action
+                .take()
+                .is_some_and(|sent_at| sent_at.elapsed() < Duration::from_millis(100));
+            if !action_already_sent {
+                if ks.modifiers.shift {
+                    session.send_input(b"\x1b[Z".to_vec());
+                } else {
+                    session.send_input(b"\t".to_vec());
+                }
+            }
+
+            cx.stop_propagation();
+            return;
+        }
+
         let data = keystroke_to_bytes(ks);
 
         if !data.is_empty() {
@@ -195,21 +252,203 @@ impl TerminalView {
         rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32))
     }
 
+    fn begin_selection(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        self.selection_anchor = Some((row, col));
+        self.selection_head = Some((row, col));
+        self.selection_dragging = true;
+        self.selection_changed = false;
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn update_row_bounds(&mut self, bounds: Vec<Bounds<Pixels>>) {
+        self.row_bounds = bounds;
+    }
+
+    fn cell_at_position(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize)> {
+        let rows = self.backend.grid.cells();
+        for (row_idx, bounds) in self.row_bounds.iter().enumerate() {
+            if row_idx >= rows.len() {
+                break;
+            }
+
+            let row_top = bounds.origin.y;
+            let row_bottom = bounds.origin.y + bounds.size.height;
+            if position.y < row_top || position.y >= row_bottom {
+                continue;
+            }
+
+            let cols = rows[row_idx].len();
+            if cols == 0 {
+                return None;
+            }
+
+            let cell_width = px((bounds.size.width / px(cols as f32)).max(1.0));
+            let relative_x = position.x - bounds.origin.x;
+            let col = (relative_x / cell_width).floor() as isize;
+            let col = col.clamp(0, cols.saturating_sub(1) as isize) as usize;
+            return Some((row_idx, col));
+        }
+
+        None
+    }
+
+    fn handle_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        window.prevent_default();
+
+        if let Some((row, col)) = self.cell_at_position(event.position) {
+            self.begin_selection(row, col, cx);
+        } else {
+            self.selection_anchor = None;
+            self.selection_head = None;
+            cx.notify();
+            cx.stop_propagation();
+        }
+    }
+
+    fn handle_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.dragging() {
+            return;
+        }
+
+        if let Some((row, col)) = self.cell_at_position(event.position) {
+            self.extend_selection(row, col, cx);
+        }
+    }
+
+    fn extend_selection(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        if !self.selection_dragging {
+            return;
+        }
+
+        let position = (row, col);
+        if self.selection_head != Some(position) {
+            self.selection_head = Some(position);
+            self.selection_changed = true;
+            cx.notify();
+        }
+
+        cx.stop_propagation();
+    }
+
+    fn finish_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.selection_dragging {
+            return;
+        }
+
+        self.selection_dragging = false;
+        if !self.selection_changed {
+            self.selection_anchor = None;
+            self.selection_head = None;
+        }
+
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    fn normalized_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let anchor = self.selection_anchor?;
+        let head = self.selection_head?;
+
+        if anchor <= head {
+            Some((anchor, head))
+        } else {
+            Some((head, anchor))
+        }
+    }
+
+    fn is_cell_selected(&self, row: usize, col: usize) -> bool {
+        let Some(((start_row, start_col), (end_row, end_col))) = self.normalized_selection() else {
+            return false;
+        };
+
+        if row < start_row || row > end_row {
+            return false;
+        }
+
+        let after_start = row > start_row || col >= start_col;
+        let before_end = row < end_row || col <= end_col;
+        after_start && before_end
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let ((start_row, start_col), (end_row, end_col)) = self.normalized_selection()?;
+        let cells = self.backend.grid.cells();
+        if cells.is_empty() {
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        let end_row = end_row.min(cells.len().saturating_sub(1));
+        for row_idx in start_row.min(end_row)..=end_row {
+            let row = &cells[row_idx];
+            if row.is_empty() {
+                lines.push(String::new());
+                continue;
+            }
+
+            let first_col = if row_idx == start_row { start_col } else { 0 };
+            let last_col = if row_idx == end_row {
+                end_col
+            } else {
+                row.len().saturating_sub(1)
+            };
+
+            if first_col >= row.len() || first_col > last_col {
+                lines.push(String::new());
+                continue;
+            }
+
+            let last_col = last_col.min(row.len().saturating_sub(1));
+            let mut line = row[first_col..=last_col]
+                .iter()
+                .map(|cell| cell.ch)
+                .collect::<String>();
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            lines.push(line);
+        }
+
+        let text = lines.join("\n");
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
     /// Render a single row of the terminal grid as a horizontal flex of text segments.
     fn render_row(&self, row: &[Cell], row_idx: usize) -> impl IntoElement {
         let cursor_row = self.backend.grid.cursor_row();
         let cursor_col = self.backend.grid.cursor_col();
         let cursor_visible = self.backend.grid.cursor_visible();
 
-        // Group consecutive cells with the same style into text segments.
-        let mut segments: Vec<(String, Color, Color)> = Vec::new(); // (text, fg, bg)
+        // Group consecutive cells with the same style/selection into text segments.
+        let mut segments: Vec<(String, Color, Color)> = Vec::new();
         for (col, cell) in row.iter().enumerate() {
-            // Handle cursor: reverse the cell at the cursor position.
-            let (fg, bg) = if cursor_visible && row_idx == cursor_row && col == cursor_col {
+            let selected = self.is_cell_selected(row_idx, col);
+            let (mut fg, mut bg) = if cursor_visible && row_idx == cursor_row && col == cursor_col {
                 (cell.effective_bg(), cell.effective_fg()) // Swap fg/bg for cursor
             } else {
                 (cell.effective_fg(), cell.effective_bg())
             };
+
+            if selected {
+                fg = SELECTION_FG;
+                bg = SELECTION_BG;
+            }
 
             if let Some(last) = segments.last_mut() {
                 if last.1 == fg && last.2 == bg {
@@ -222,7 +461,7 @@ impl TerminalView {
 
         // If the cursor is at the end of the line, add a space for the cursor.
         if cursor_visible && row_idx == cursor_row && cursor_col >= row.len() {
-            let bg = DEFAULT_FG; // Cursor block color
+            let bg = DEFAULT_FG;
             segments.push((" ".to_string(), bg, bg));
         }
 
@@ -272,6 +511,12 @@ impl Render for TerminalView {
         let theme = cx.theme();
         let mono_font = theme.mono_font_family.clone();
         let mono_size = theme.mono_font_size;
+        let rows = cells
+            .iter()
+            .enumerate()
+            .map(|(i, row)| self.render_row(row, i))
+            .collect::<Vec<_>>();
+        let terminal = cx.entity();
 
         div()
             .size_full()
@@ -290,23 +535,30 @@ impl Render for TerminalView {
             .key_context(TERMINAL_KEY_CONTEXT)
             .on_action(cx.listener(Self::on_action_send_tab))
             .on_action(cx.listener(Self::on_action_send_back_tab))
-            .on_mouse_down(
+            .on_action(cx.listener(Self::on_action_copy_selection))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_mouse_move(cx.listener(Self::handle_mouse_move))
+            .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
+                cx.listener(|this, _, _, cx| {
+                    this.finish_selection(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.finish_selection(cx);
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key_down(event, window, cx);
             }))
-            .children(
-                cells
-                    .iter()
-                    .enumerate()
-                    .map(|(i, row)| self.render_row(row, i)),
-            )
+            .on_children_prepainted(move |bounds, _, cx| {
+                terminal.update(cx, |this, _| {
+                    this.update_row_bounds(bounds);
+                });
+            })
+            .children(rows)
     }
 }
 
@@ -322,7 +574,6 @@ fn keystroke_to_bytes(ks: &Keystroke) -> Vec<u8> {
     match ks.key.as_str() {
         "enter" | "return" => return b"\r".to_vec(),
         "backspace" => return b"\x7f".to_vec(),
-        "tab" => return b"\t".to_vec(),
         "escape" => return b"\x1b".to_vec(),
         "up" => return b"\x1b[A".to_vec(),
         "down" => return b"\x1b[B".to_vec(),
@@ -335,6 +586,10 @@ fn keystroke_to_bytes(ks: &Keystroke) -> Vec<u8> {
         "pagedown" => return b"\x1b[6~".to_vec(),
         "insert" => return b"\x1b[2~".to_vec(),
         _ => {}
+    }
+
+    if ks.modifiers.platform {
+        return Vec::new();
     }
 
     // Ctrl+key combinations: Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
