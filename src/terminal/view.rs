@@ -1,9 +1,10 @@
 //! Terminal view: renders the terminal grid in gpui and handles keyboard input.
 
 use gpui::{
-    actions, div, px, rgb, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle,
+    actions, div, font, px, rgb, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, Styled, Task, Window,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, SharedString, Styled, Task,
+    TextRun, Window,
 };
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,8 @@ pub struct TerminalView {
     selection_changed: bool,
     /// Cached row bounds from GPUI prepaint for mouse selection hit testing.
     row_bounds: Vec<Bounds<Pixels>>,
+    /// Measured monospace cell width for mouse selection hit testing.
+    cell_width: Pixels,
     /// Used to dedupe Tab if both a key binding action and key_down are delivered.
     last_tab_action_at: Option<Instant>,
     last_back_tab_action_at: Option<Instant>,
@@ -160,6 +163,7 @@ impl TerminalView {
             selection_dragging: false,
             selection_changed: false,
             row_bounds: Vec::new(),
+            cell_width: px(1.0),
             last_tab_action_at: None,
             last_back_tab_action_at: None,
             _event_sub: Some(poll),
@@ -265,6 +269,31 @@ impl TerminalView {
         self.row_bounds = bounds;
     }
 
+    fn update_cell_width(
+        &mut self,
+        mono_font: SharedString,
+        mono_size: Pixels,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let sample = SharedString::new_static("M");
+        let shaped = window.text_system().shape_line(
+            sample.clone(),
+            mono_size,
+            &[TextRun {
+                len: sample.len(),
+                font: font(mono_font),
+                color: cx.theme().foreground,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+
+        self.cell_width = px(window.pixel_snap(shaped.width).as_f32().max(1.0));
+    }
+
     fn cell_at_position(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize)> {
         let rows = self.backend.grid.cells();
         for (row_idx, bounds) in self.row_bounds.iter().enumerate() {
@@ -283,10 +312,8 @@ impl TerminalView {
                 return None;
             }
 
-            let cell_width = px((bounds.size.width / px(cols as f32)).max(1.0));
             let relative_x = position.x - bounds.origin.x;
-            let col = (relative_x / cell_width).floor() as isize;
-            let col = col.clamp(0, cols.saturating_sub(1) as isize) as usize;
+            let col = col_at_x(relative_x, self.cell_width, cols)?;
             return Some((row_idx, col));
         }
 
@@ -506,11 +533,12 @@ impl Focusable for TerminalView {
 impl EventEmitter<PanelEvent> for TerminalView {}
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cells = self.backend.grid.cells();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let mono_font = theme.mono_font_family.clone();
         let mono_size = theme.mono_font_size;
+        self.update_cell_width(mono_font.clone(), mono_size, window, cx);
+        let cells = self.backend.grid.cells();
         let rows = cells
             .iter()
             .enumerate()
@@ -626,4 +654,30 @@ fn keystroke_to_bytes(ks: &Keystroke) -> Vec<u8> {
 
     // Fallback: no data to send.
     Vec::new()
+}
+
+fn col_at_x(relative_x: Pixels, cell_width: Pixels, cols: usize) -> Option<usize> {
+    if cols == 0 {
+        return None;
+    }
+
+    let cell_width = px(cell_width.as_f32().max(1.0));
+    let col = (relative_x / cell_width).floor() as isize;
+    Some(col.clamp(0, cols.saturating_sub(1) as isize) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn col_at_x_uses_measured_cell_width() {
+        assert_eq!(col_at_x(px(45.0), px(9.0), 80), Some(5));
+    }
+
+    #[test]
+    fn col_at_x_clamps_outside_row() {
+        assert_eq!(col_at_x(px(-8.0), px(9.0), 80), Some(0));
+        assert_eq!(col_at_x(px(900.0), px(9.0), 80), Some(79));
+    }
 }
