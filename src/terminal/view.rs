@@ -3,8 +3,8 @@
 use gpui::{
     actions, div, font, px, rgb, App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, SharedString, Styled, Task,
-    TextRun, Window,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, SharedString, Styled,
+    StyledText, Task, TextRun, Window,
 };
 use std::time::{Duration, Instant};
 
@@ -256,6 +256,10 @@ impl TerminalView {
         rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32))
     }
 
+    fn color_to_hsla(c: Color) -> gpui::Hsla {
+        Self::color_to_gpui(c).into()
+    }
+
     fn begin_selection(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         self.selection_anchor = Some((row, col));
         self.selection_head = Some((row, col));
@@ -456,14 +460,20 @@ impl TerminalView {
         }
     }
 
-    /// Render a single row of the terminal grid as a horizontal flex of text segments.
-    fn render_row(&self, row: &[Cell], row_idx: usize) -> impl IntoElement {
+    /// Render a single row of the terminal grid as one shaped text element.
+    fn render_row(
+        &self,
+        row: &[Cell],
+        row_idx: usize,
+        mono_font: SharedString,
+    ) -> impl IntoElement {
         let cursor_row = self.backend.grid.cursor_row();
         let cursor_col = self.backend.grid.cursor_col();
         let cursor_visible = self.backend.grid.cursor_visible();
+        let terminal_font = font(mono_font);
 
-        // Group consecutive cells with the same style/selection into text segments.
-        let mut segments: Vec<(String, Color, Color)> = Vec::new();
+        let mut text = String::with_capacity(row.len());
+        let mut runs = Vec::new();
         for (col, cell) in row.iter().enumerate() {
             let selected = self.is_cell_selected(row_idx, col);
             let (mut fg, mut bg) = if cursor_visible && row_idx == cursor_row && col == cursor_col {
@@ -477,34 +487,41 @@ impl TerminalView {
                 bg = SELECTION_BG;
             }
 
-            if let Some(last) = segments.last_mut() {
-                if last.1 == fg && last.2 == bg {
-                    last.0.push(cell.ch);
-                    continue;
-                }
-            }
-            segments.push((cell.ch.to_string(), fg, bg));
+            text.push(cell.ch);
+            push_text_run(
+                &mut runs,
+                TextRun {
+                    len: cell.ch.len_utf8(),
+                    font: terminal_font.clone(),
+                    color: Self::color_to_hsla(fg),
+                    background_color: (bg != DEFAULT_BG).then(|| Self::color_to_hsla(bg)),
+                    underline: None,
+                    strikethrough: None,
+                },
+            );
         }
 
         // If the cursor is at the end of the line, add a space for the cursor.
         if cursor_visible && row_idx == cursor_row && cursor_col >= row.len() {
             let bg = DEFAULT_FG;
-            segments.push((" ".to_string(), bg, bg));
+            text.push(' ');
+            push_text_run(
+                &mut runs,
+                TextRun {
+                    len: 1,
+                    font: terminal_font,
+                    color: Self::color_to_hsla(bg),
+                    background_color: Some(Self::color_to_hsla(bg)),
+                    underline: None,
+                    strikethrough: None,
+                },
+            );
         }
 
         div()
-            .flex()
-            .flex_row()
             .h(px(20.0))
-            .children(segments.into_iter().map(|(text, fg, bg)| {
-                let bg_differs = bg != DEFAULT_BG;
-                let el = div().text_color(Self::color_to_gpui(fg)).child(text);
-                if bg_differs {
-                    el.bg(Self::color_to_gpui(bg))
-                } else {
-                    el
-                }
-            }))
+            .whitespace_nowrap()
+            .child(StyledText::new(text).with_runs(runs))
     }
 }
 
@@ -542,7 +559,7 @@ impl Render for TerminalView {
         let rows = cells
             .iter()
             .enumerate()
-            .map(|(i, row)| self.render_row(row, i))
+            .map(|(i, row)| self.render_row(row, i, mono_font.clone()))
             .collect::<Vec<_>>();
         let terminal = cx.entity();
 
@@ -594,6 +611,26 @@ impl Panel for TerminalView {
     fn panel_name(&self) -> &'static str {
         "terminal"
     }
+}
+
+fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
+    if run.len == 0 {
+        return;
+    }
+
+    if let Some(last) = runs.last_mut() {
+        if last.font == run.font
+            && last.color == run.color
+            && last.background_color == run.background_color
+            && last.underline == run.underline
+            && last.strikethrough == run.strikethrough
+        {
+            last.len += run.len;
+            return;
+        }
+    }
+
+    runs.push(run);
 }
 
 /// Convert a gpui Keystroke to terminal bytes (escape sequences for special keys).
